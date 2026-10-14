@@ -8,6 +8,8 @@ This Python program is a Secret Santa organizer that allows you to manage your S
 
 * Email Notifications: You can send email notifications to participants directly from the program. It provides options to send emails to all participants or individual participants.
 
+* Global Budget Setting: The organiser can view and edit one budget for the whole gift exchange in the Settings area. The value is saved with the rest of the data and is substituted into every participant's email.
+
 * Customizable Email Messages: The program generates personalized email messages for each participant, including their assigned Secret Santa recipient's name and other event details.
 
 ## Usage
