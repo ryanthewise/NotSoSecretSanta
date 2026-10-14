@@ -1,5 +1,9 @@
-import tkinter as tk
-from tkinter import messagebox
+try:
+    import tkinter as tk
+    from tkinter import messagebox
+except ImportError:  # pragma: no cover - allows importing this module without a display/tkinter
+    tk = None
+    messagebox = None
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -14,23 +18,65 @@ DATA_FILE = 'secret_santa_data.json'
 # User = 'somedude'
 # PW = 'somepass'
 
+# Default global settings for the whole gift exchange.
+# The budget is a single, global spend amount shared by every participant.
+DEFAULT_SETTINGS = {'budget': '$25'}
+
 # Load existing data from the file
 def load_data():
     try:
         with open(DATA_FILE, 'r') as f:
-            return json.load(f)
+            data = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
-        return {'adults': [], 'children': []}
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    data.setdefault('adults', [])
+    data.setdefault('children', [])
+    data.setdefault('pairings', [])
+    # Merge saved settings over the defaults so new settings always exist.
+    settings = dict(DEFAULT_SETTINGS)
+    settings.update(data.get('settings') or {})
+    data['settings'] = settings
+    return data
 
 # Save current data to the file
-def save_data(adults, children, pairings=None):
+def save_data(adults, children, pairings=None, settings=None):
+    if settings is None:
+        # Preserve the settings that are already on disk.
+        settings = load_data().get('settings', dict(DEFAULT_SETTINGS))
     data = {
         'adults': adults,
         'children': children,
-        'pairings': pairings if pairings is not None else []
+        'pairings': pairings if pairings is not None else [],
+        'settings': settings
     }
     with open(DATA_FILE, 'w') as f:
         json.dump(data, f, indent=4)
+
+# Global/app settings are stored the same way as the rest of the data: in DATA_FILE.
+def get_settings():
+    return load_data().get('settings', dict(DEFAULT_SETTINGS))
+
+def save_settings(settings):
+    data = load_data()
+    save_data(data.get('adults', []), data.get('children', []),
+              data.get('pairings', []), settings)
+
+# The global budget used for every participant's email.
+def get_budget():
+    budget = get_settings().get('budget')
+    return budget if budget else DEFAULT_SETTINGS['budget']
+
+def save_budget(budget):
+    """Validate and persist the global budget setting. Returns the stored value."""
+    budget = (budget or '').strip()
+    if not budget:
+        raise ValueError("Budget cannot be empty.")
+    settings = get_settings()
+    settings['budget'] = budget
+    save_settings(settings)
+    return budget
 
 # A simple function to add an entry to a list and listbox
 def add_entry(name, email, listbox, entries_list, is_child=False):
@@ -145,7 +191,6 @@ def email_direct_wrapper():
         adult_assignment=selected_adult_details["adult_assignment"],
         child_assignment=selected_adult_details["child_assignment"],
         date_of_exchange="December 24th",
-        spend_limit="$25"
     )
 
 def send_email_all():
@@ -174,7 +219,6 @@ def send_email_all():
             adult_assignment=adult_assignment,
             child_assignment=child_assignment,
             date_of_exchange="December 24th",
-            spend_limit="$25"
         )
 
         # Delay the next email by 1 second
@@ -183,27 +227,28 @@ def send_email_all():
     # Notify the user that all emails have been sent
     messagebox.showinfo("Email All", "Emails have been sent to all adults.")
 
-def send_email_direct(adult_name, adult_email, adult_assignment, child_assignment=None, date_of_exchange="December 24th", spend_limit="$25"):
-    # Email sender account details
-    gmail_user = 'Helper3lf@gmail.com'
-    gmail_app_password = 'qmrmarqnkfaiqism'
+def build_email_body(adult_name, adult_assignment, child_assignment=None, budget=None, date_of_exchange="December 24th"):
+    """Render the email template for one participant.
 
-    # Email content
-    subject = '🎄 Black Family Secret Santa Pairing Announcement! 🎅'
-    
-    # Email body with dynamic content based on the selected adult's name and assignments
+    The budget is a global setting, so it is read from the saved settings unless
+    an explicit value is passed in. No participant-specific budget exists.
+    """
+    if budget is None:
+        budget = get_budget()
+
+    # Email body with dynamic content based on the recipient's name and assignments
     greeting = f"Dear {adult_name.split()[0]},\n\n"
     body_intro = (
         "Ho-Ho-Hello and Season’s Greetings!\n\n"
         "This year, you have the special task of playing Santa to:\n\n\n"
     )
-    
+
     assignments = f"{adult_assignment}"
     if child_assignment:
         assignments += f" and {child_assignment}"
-        
+
     body_outro = (
-        f"\n\n\nRemember, the joy is in the giving, not in the value of the gift! We've set a merry spending limit of {spend_limit} for each person to keep things fun and fair.\n\n"
+        f"\n\n\nRemember, the joy is in the giving, not in the value of the gift! We've set a merry spending limit of {budget} for each person to keep things fun and fair.\n\n"
         "📅 Important Dates:\n\n"
         f"Please keep your Secret Santa role under wraps and be sure to have your gifts ready by our family gathering on {date_of_exchange}. "
         "If you are unable to attend or need to send your gift by reindeer post, let us know, and we’ll arrange a sleigh delivery.\n\n"
@@ -212,7 +257,24 @@ def send_email_direct(adult_name, adult_email, adult_assignment, child_assignmen
         "P.S. Keep an eye on your inbox for any updates or changes to our Secret Santa plans!"
     )
 
-    body = greeting + body_intro + assignments + body_outro
+    return greeting + body_intro + assignments + body_outro
+
+def send_email_direct(adult_name, adult_email, adult_assignment, child_assignment=None, date_of_exchange="December 24th", budget=None):
+    # Email sender account details
+    gmail_user = 'Helper3lf@gmail.com'
+    gmail_app_password = 'qmrmarqnkfaiqism'
+
+    # Email content
+    subject = '🎄 Black Family Secret Santa Pairing Announcement! 🎅'
+
+    # The global budget is substituted into the template for every participant.
+    body = build_email_body(
+        adult_name=adult_name,
+        adult_assignment=adult_assignment,
+        child_assignment=child_assignment,
+        budget=budget,
+        date_of_exchange=date_of_exchange,
+    )
     
     # Create the email message
     msg = MIMEMultipart()
@@ -232,98 +294,122 @@ def send_email_direct(adult_name, adult_email, adult_assignment, child_assignmen
     except Exception as e:
         print(f'An error occurred: {e}')
 
-# Now, modify the initialization section to load existing data
-data = load_data()
-adults = data['adults']
-children = data['children']
+if __name__ == '__main__':
+    # Now, modify the initialization section to load existing data
+    data = load_data()
+    adults = data['adults']
+    children = data['children']
 
-# Initialize the main window
-root = tk.Tk()
-root.title("Secret Santa Organizer")
+    # Initialize the main window
+    root = tk.Tk()
+    root.title("Secret Santa Organizer")
 
-# Create the UI elements
-left_frame = tk.Frame(root)
-left_frame.pack(side=tk.LEFT, padx=10, pady=10)
+    # Global settings surface: an organiser can view and edit the budget here.
+    def on_save_budget():
+        try:
+            save_budget(budget_entry.get())
+        except ValueError as e:
+            messagebox.showerror("Error", str(e))
+            return
+        messagebox.showinfo("Settings", f"Budget saved: {get_budget()}")
 
-right_frame = tk.Frame(root)
-right_frame.pack(side=tk.RIGHT, padx=10, pady=10)
+    settings_frame = tk.LabelFrame(root, text="Settings", padx=10, pady=10)
+    settings_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=(10, 0))
 
-# UI for adding people
-name_label = tk.Label(left_frame, text="Name:")
-name_label.pack()
-name_entry = tk.Entry(left_frame, width=50)
-name_entry.pack()
+    budget_label = tk.Label(settings_frame, text="Budget for the whole exchange:")
+    budget_label.pack(side=tk.LEFT)
 
-email_label = tk.Label(left_frame, text="Email:")
-email_label.pack()
-email_entry = tk.Entry(left_frame, width=50)
-email_entry.pack()
+    budget_entry = tk.Entry(settings_frame, width=15)
+    budget_entry.insert(0, get_budget())
+    budget_entry.pack(side=tk.LEFT, padx=5)
 
-add_adult_button = tk.Button(left_frame, text="Add Adult",
-                             command=lambda: add_entry(name_entry.get(), email_entry.get(), adults_listbox, adults))
-add_adult_button.pack(pady=5)
+    save_budget_button = tk.Button(settings_frame, text="Save Budget", command=on_save_budget)
+    save_budget_button.pack(side=tk.LEFT)
 
-add_child_button = tk.Button(left_frame, text="Add Child",
-                             command=lambda: add_entry(name_entry.get(), '', children_listbox, children, is_child=True))
-add_child_button.pack(pady=5)
+    # Create the UI elements
+    left_frame = tk.Frame(root)
+    left_frame.pack(side=tk.LEFT, padx=10, pady=10)
 
-remove_button = tk.Button(left_frame, text="Remove Selected",
-                          command=remove_entry)
-remove_button.pack(pady=5)
+    right_frame = tk.Frame(root)
+    right_frame.pack(side=tk.RIGHT, padx=10, pady=10)
 
-left_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=10)
+    # UI for adding people
+    name_label = tk.Label(left_frame, text="Name:")
+    name_label.pack()
+    name_entry = tk.Entry(left_frame, width=50)
+    name_entry.pack()
 
-# Left bottom frame for the Shuffle button
-left_bottom_frame = tk.Frame(left_frame)
-left_bottom_frame.pack(side=tk.LEFT, expand=True, fill=tk.BOTH)
+    email_label = tk.Label(left_frame, text="Email:")
+    email_label.pack()
+    email_entry = tk.Entry(left_frame, width=50)
+    email_entry.pack()
 
-# Right bottom frame for the Email buttons
-right_bottom_frame = tk.Frame(left_frame)
-right_bottom_frame.pack(side=tk.RIGHT, expand=True, fill=tk.BOTH)
+    add_adult_button = tk.Button(left_frame, text="Add Adult",
+                                 command=lambda: add_entry(name_entry.get(), email_entry.get(), adults_listbox, adults))
+    add_adult_button.pack(pady=5)
 
-# Shuffle button
-shuffle_button = tk.Button(left_bottom_frame, text="Shuffle", command=shuffle_and_save_pairings)
-shuffle_button.pack(side=tk.LEFT, expand=True, fill=tk.BOTH, padx=(0, 5))
+    add_child_button = tk.Button(left_frame, text="Add Child",
+                                 command=lambda: add_entry(name_entry.get(), '', children_listbox, children, is_child=True))
+    add_child_button.pack(pady=5)
 
-# Calculate the height for the email buttons based on the shuffle button's height
-root.update_idletasks()  # Update UI to ensure sizes are calculated correctly
-shuffle_button_height = shuffle_button.winfo_height()
-email_button_height = shuffle_button_height // 2
+    remove_button = tk.Button(left_frame, text="Remove Selected",
+                              command=remove_entry)
+    remove_button.pack(pady=5)
 
-# Set up the Email Direct button to use the wrapper function
-email_direct_button = tk.Button(right_bottom_frame, text="Email Direct", command=email_direct_wrapper)
-email_direct_button.pack(fill=tk.X, pady=(0, 2))
+    left_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=10)
 
-# Email All button
-email_all_button = tk.Button(right_bottom_frame, text="Email All", command=send_email_all)
-email_all_button.pack(fill=tk.X, pady=(2, 0))
+    # Left bottom frame for the Shuffle button
+    left_bottom_frame = tk.Frame(left_frame)
+    left_bottom_frame.pack(side=tk.LEFT, expand=True, fill=tk.BOTH)
 
-# Set the height of the email buttons to match the height of the shuffle button
-email_direct_button.pack_propagate(False)  # Prevent the button from shrinking
-email_all_button.pack_propagate(False)  # Prevent the button from shrinking
-email_direct_button.config(height=email_button_height)
-email_all_button.config(height=email_button_height)
+    # Right bottom frame for the Email buttons
+    right_bottom_frame = tk.Frame(left_frame)
+    right_bottom_frame.pack(side=tk.RIGHT, expand=True, fill=tk.BOTH)
 
-# UI for showing added adults and children
-adults_listbox_label = tk.Label(right_frame, text="Adults:")
-adults_listbox_label.pack()
-adults_listbox = tk.Listbox(right_frame, width=50)
-adults_listbox.pack()
+    # Shuffle button
+    shuffle_button = tk.Button(left_bottom_frame, text="Shuffle", command=shuffle_and_save_pairings)
+    shuffle_button.pack(side=tk.LEFT, expand=True, fill=tk.BOTH, padx=(0, 5))
 
-children_listbox_label = tk.Label(right_frame, text="Children:")
-children_listbox_label.pack()
-children_listbox = tk.Listbox(right_frame, width=50)
-children_listbox.pack()
+    # Calculate the height for the email buttons based on the shuffle button's height
+    root.update_idletasks()  # Update UI to ensure sizes are calculated correctly
+    shuffle_button_height = shuffle_button.winfo_height()
+    email_button_height = shuffle_button_height // 2
 
-# When populating the Listboxes, do the following after their creation:
-for adult in adults:
-    adults_listbox.insert(tk.END, f"{adult[0]} <{adult[1]}>")
+    # Set up the Email Direct button to use the wrapper function
+    email_direct_button = tk.Button(right_bottom_frame, text="Email Direct", command=email_direct_wrapper)
+    email_direct_button.pack(fill=tk.X, pady=(0, 2))
 
-for child in children:
-    children_listbox.insert(tk.END, f"{child[0]} <{child[1]}>")
+    # Email All button
+    email_all_button = tk.Button(right_bottom_frame, text="Email All", command=send_email_all)
+    email_all_button.pack(fill=tk.X, pady=(2, 0))
+
+    # Set the height of the email buttons to match the height of the shuffle button
+    email_direct_button.pack_propagate(False)  # Prevent the button from shrinking
+    email_all_button.pack_propagate(False)  # Prevent the button from shrinking
+    email_direct_button.config(height=email_button_height)
+    email_all_button.config(height=email_button_height)
+
+    # UI for showing added adults and children
+    adults_listbox_label = tk.Label(right_frame, text="Adults:")
+    adults_listbox_label.pack()
+    adults_listbox = tk.Listbox(right_frame, width=50)
+    adults_listbox.pack()
+
+    children_listbox_label = tk.Label(right_frame, text="Children:")
+    children_listbox_label.pack()
+    children_listbox = tk.Listbox(right_frame, width=50)
+    children_listbox.pack()
+
+    # When populating the Listboxes, do the following after their creation:
+    for adult in adults:
+        adults_listbox.insert(tk.END, f"{adult[0]} <{adult[1]}>")
+
+    for child in children:
+        children_listbox.insert(tk.END, f"{child[0]} <{child[1]}>")
 
 
-# This is where you would add more UI elements for handling the Secret Santa logic and sending emails
+    # This is where you would add more UI elements for handling the Secret Santa logic and sending emails
 
-# Start the Tkinter event loop
-root.mainloop()
+    # Start the Tkinter event loop
+    root.mainloop()
+
